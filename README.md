@@ -9,16 +9,30 @@ the places this implementation disagrees with the spec are in
 
 ## Status
 
-Milestones 1–3 of the revised order (see ADR 0006). The engine, the canonical
-transcript and the routing rules are complete and tested against mock
-providers. **No real provider adapter exists yet, and nothing is wired to HTTP.**
+**v0.1 complete.** All eleven exit criteria in spec §23 are met, with one
+caveat: the provider adapters have been typechecked against the real SDKs and
+exercised end to end with mocks, but not yet run against live APIs — the
+machine they were written on had no keys.
 
 ```
-npm test
+npm run mock        # the whole app, no keys needed
+npm start           # with real providers, reads .env
+npm test            # 17 tests, no network, ~0.4s
+npm run typecheck
 ```
 
-17 tests, no network, no API keys, ~0.4s. All ten from spec §22, plus six
-asserting decisions that would otherwise only exist in prose.
+Run `npm run mock` and open http://localhost:3000 to see three participants in
+one conversation without spending anything.
+
+## Try it for real
+
+```
+cp .env.example .env     # add OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+npm start
+```
+
+One key is enough — a missing provider is simply absent from the room, which is
+§16's "one provider being unavailable while the other remains available".
 
 ## Shape
 
@@ -34,6 +48,11 @@ src/
     stops.ts                turns, cost, deadline, convergence
   providers/
     mock.ts                 scripted providers for tests
+    openai.ts               adapter
+    anthropic.ts            adapter
+  server.ts                 node:http + SSE; holds the keys
+web/
+  index.html                the whole interface, no build step
 ```
 
 The engine contains no provider-specific logic (§12). It sees `ContextTurn[]`
@@ -41,8 +60,9 @@ going out and `ProviderEvent` coming back, and nothing else.
 
 ## Next
 
-4. OpenAI adapter
-5. Anthropic adapter
-6. Streaming over SSE
-7. Cancellation and error recovery end to end
-8. Interface
+Nothing in v0.1's scope. Candidates, in no order:
+
+- persistence behind the existing `ConversationStore` interface
+- more than one conversation at a time (the server tracks a single active room)
+- a real convergence measure — see ADR 0005, which does not trust the current one
+- a third provider, which should need no engine changes (§13)

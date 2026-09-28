@@ -1,0 +1,167 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Room</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#262d36; --text:#e6edf3; --dim:#8b949e;
+    --human:#58a6ff; --openai:#3fb950; --anthropic:#d29922; --err:#f85149;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif;
+       height:100dvh;display:flex;flex-direction:column}
+  header{padding:.7rem 1rem;border-bottom:1px solid var(--line);
+         display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+  h1{font-size:1rem;margin:0;font-weight:600;letter-spacing:.01em}
+  .who{display:flex;gap:.4rem;margin-left:auto;flex-wrap:wrap}
+  .chip{font-size:.72rem;padding:.16rem .5rem;border-radius:999px;
+        border:1px solid var(--line);color:var(--dim)}
+  .chip.on{color:var(--text)}
+  .chip[data-p=openai].on{border-color:var(--openai);color:var(--openai)}
+  .chip[data-p=anthropic].on{border-color:var(--anthropic);color:var(--anthropic)}
+  main{flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:.9rem}
+  .msg{max-width:min(72ch,100%)}
+  .msg .from{font-size:.7rem;letter-spacing:.09em;text-transform:uppercase;
+             font-weight:700;margin-bottom:.2rem}
+  .msg.human .from{color:var(--human)}
+  .msg.openai .from{color:var(--openai)}
+  .msg.anthropic .from{color:var(--anthropic)}
+  .msg .body{white-space:pre-wrap;word-wrap:break-word;
+             background:var(--panel);border:1px solid var(--line);
+             border-radius:10px;padding:.6rem .8rem}
+  .msg.human .body{background:transparent;border-color:transparent;padding-left:0}
+  .msg.streaming .body::after{content:'▍';color:var(--dim);animation:b 1s steps(2) infinite}
+  @keyframes b{50%{opacity:0}}
+  .msg.error .body{border-color:var(--err);color:var(--err)}
+  .msg.cancelled .body{opacity:.55;font-style:italic}
+  .note{color:var(--dim);font-size:.78rem;text-align:center;padding:.3rem}
+  footer{border-top:1px solid var(--line);padding:.7rem 1rem;
+         display:flex;gap:.5rem;align-items:flex-end;flex-wrap:wrap}
+  select,button,textarea{font:inherit;background:var(--panel);color:var(--text);
+         border:1px solid var(--line);border-radius:8px;padding:.5rem .6rem}
+  textarea{flex:1;min-width:12rem;resize:none;min-height:2.6rem;max-height:9rem}
+  button{cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  button.stop{border-color:var(--err);color:var(--err)}
+</style>
+
+<header>
+  <h1>AI&nbsp;Room</h1>
+  <div class="who" id="who"></div>
+</header>
+
+<main id="log"><div class="note" id="hint">Connecting…</div></main>
+
+<footer>
+  <select id="mode" title="Who answers">
+    <option value="both">Both</option>
+    <option value="openai">ChatGPT only</option>
+    <option value="anthropic">Claude only</option>
+    <option value="roundtable">Roundtable</option>
+  </select>
+  <textarea id="input" rows="1" placeholder="Ask them something…  (Enter to send)"></textarea>
+  <button id="send">Send</button>
+  <button id="stop" class="stop" disabled>Stop</button>
+</footer>
+
+<script type="module">
+const log   = document.getElementById('log')
+const hint  = document.getElementById('hint')
+const who   = document.getElementById('who')
+const input = document.getElementById('input')
+const send  = document.getElementById('send')
+const stop  = document.getElementById('stop')
+const mode  = document.getElementById('mode')
+
+const LABEL = { human:'You', openai:'ChatGPT', anthropic:'Claude' }
+const nodes = new Map()          // messageId -> element
+let convId = null
+let busy = false
+
+function setBusy(v){
+  busy = v
+  send.disabled = v
+  stop.disabled = !v
+  mode.disabled = v
+}
+
+function bubble(m){
+  const key = m.speakerType === 'human' ? 'human' : m.provider
+  let el = nodes.get(m.id)
+  if (!el){
+    el = document.createElement('div')
+    el.innerHTML = `<div class="from"></div><div class="body"></div>`
+    el.querySelector('.from').textContent = LABEL[key] ?? key
+    log.appendChild(el)
+    nodes.set(m.id, el)
+  }
+  el.className = `msg ${key} ${m.status}`
+  const body = el.querySelector('.body')
+  if (m.status === 'error')      body.textContent = m.content ? `${m.content}\n\n⚠ ${LABEL[key]} failed` : `⚠ ${LABEL[key]} is unavailable`
+  else if (m.status === 'cancelled') body.textContent = (m.content || '') + ' …stopped'
+  else if (m.content !== undefined && m.content !== '') body.textContent = m.content
+  log.scrollTop = log.scrollHeight
+  return el
+}
+
+function note(text){
+  const n = document.createElement('div')
+  n.className = 'note'; n.textContent = text
+  log.appendChild(n); log.scrollTop = log.scrollHeight
+}
+
+async function start(){
+  const r = await fetch('/api/conversations', { method:'POST' })
+  const { conversation, providers } = await r.json()
+  convId = conversation.id
+  who.innerHTML = ''
+  for (const p of providers){
+    const c = document.createElement('span')
+    c.className = 'chip on'; c.dataset.p = p.id; c.textContent = p.name
+    who.appendChild(c)
+  }
+  hint.textContent = 'Three of you. Ask something.'
+
+  const es = new EventSource(`/api/conversations/${convId}/events`)
+  es.onmessage = ev => {
+    const e = JSON.parse(ev.data)
+    if (e.type === 'message-start') bubble(e.message)
+    else if (e.type === 'message-delta'){
+      const el = [...nodes.entries()].find(([id]) => id === e.messageId)?.[1]
+      if (el) { el.querySelector('.body').textContent += e.text; log.scrollTop = log.scrollHeight }
+    }
+    else if (e.type === 'message-end'){ bubble(e.message); if (e.message.speakerType==='ai' && mode.value!=='roundtable') maybeIdle() }
+    else if (e.type === 'round-end'){
+      const why = { 'max-turns':'turn limit', 'max-cost':'cost limit', deadline:'time limit',
+                    converged:'they converged', cancelled:'you stopped it' }[e.reason]
+      if (why) note(`Round ended — ${why}.`)
+      setBusy(false)
+    }
+  }
+  es.onerror = () => note('Connection lost — retrying…')
+}
+
+let pending = 0
+function maybeIdle(){ if (--pending <= 0) setBusy(false) }
+
+async function submit(){
+  const content = input.value.trim()
+  if (!content || busy) return
+  input.value = ''
+  setBusy(true)
+  pending = mode.value === 'both' ? 2 : 1
+  const r = await fetch(`/api/conversations/${convId}/messages`, {
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ content, mode: mode.value }),
+  })
+  if (!r.ok){ note('Could not send.'); setBusy(false) }
+}
+
+send.onclick = submit
+stop.onclick = () => fetch(`/api/conversations/${convId}/cancel`, { method:'POST' })
+input.onkeydown = e => { if (e.key==='Enter' && !e.shiftKey){ e.preventDefault(); submit() } }
+input.oninput = () => { input.style.height='auto'; input.style.height = Math.min(input.scrollHeight,144)+'px' }
+
+start()
+</script>
