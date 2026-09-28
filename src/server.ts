@@ -20,11 +20,27 @@ const MOCK = process.argv.includes('--mock')
 
 const store = new InMemoryStore()
 
-// One subscriber list per conversation. Events are fanned out to every open
-// SSE connection for that conversation.
-const subscribers = new Map<string, Set<(e: EngineEvent) => void>>()
+// ── The event log ───────────────────────────────────────────────────────────
+// The SSE cursor addresses EVENTS, not messages. An earlier version used a
+// message's `seq` as the id, which meant only message-end carried one: a client
+// that disconnected mid-generation resumed having missed the message-start and
+// every delta, and replay re-sent still-streaming messages labelled
+// message-end — telling the browser a turn had finished while it was still
+// being written. See ADR 0009.
+let eventSeq = 0
+const eventLog = new Map<string, { id: number; e: EngineEvent }[]>()
+const LOG_LIMIT = 2000
+
+type Subscriber = (id: number, e: EngineEvent) => void
+const subscribers = new Map<string, Set<Subscriber>>()
+
 function publish(conversationId: string, e: EngineEvent) {
-  for (const fn of subscribers.get(conversationId) ?? []) fn(e)
+  const id = ++eventSeq
+  const log = eventLog.get(conversationId) ?? []
+  log.push({ id, e })
+  while (log.length > LOG_LIMIT) log.shift()
+  eventLog.set(conversationId, log)
+  for (const fn of subscribers.get(conversationId) ?? []) fn(id, e)
 }
 
 async function buildProviders(): Promise<AIProvider[]> {
@@ -116,19 +132,33 @@ const server = createServer(async (req, res) => {
       })
       res.write(': connected\n\n')
 
+      // Every event gets an id, so a mid-generation disconnect resumes with the
+      // message-start and deltas it missed rather than only finished messages.
       const since = Number(req.headers['last-event-id'] ?? 0)
-      if (since > 0) {
-        for (const m of await store.getMessages(cid)) {
-          if (m.seq > since) res.write(`id: ${m.seq}\ndata: ${JSON.stringify({ type: 'message-end', message: m })}\n\n`)
-        }
+      let written = since
+      const write = (id: number, e: EngineEvent) => {
+        if (id <= written) return          // also de-duplicates the flush below
+        written = id
+        res.write(`id: ${id}\ndata: ${JSON.stringify(e)}\n\n`)
       }
 
-      const send = (e: EngineEvent) => {
-        const id = (e.type === 'message-end') ? `id: ${e.message.seq}\n` : ''
-        res.write(`${id}data: ${JSON.stringify(e)}\n\n`)
+      // Subscribe BEFORE replaying, and buffer anything live until replay is
+      // done. Subscribing afterwards left a window in which an event published
+      // between the two steps reached nobody.
+      let replaying = true
+      const buffered: { id: number; e: EngineEvent }[] = []
+      const send: Subscriber = (id, e) => {
+        if (replaying) buffered.push({ id, e })
+        else write(id, e)
       }
       if (!subscribers.has(cid)) subscribers.set(cid, new Set())
       subscribers.get(cid)!.add(send)
+
+      // Synchronous on purpose — the log is in memory, so there is no await
+      // here for an event to slip through.
+      for (const entry of eventLog.get(cid) ?? []) write(entry.id, entry.e)
+      replaying = false
+      for (const entry of buffered) write(entry.id, entry.e)
 
       const ping = setInterval(() => res.write(': ping\n\n'), 20_000)
       req.on('close', () => { clearInterval(ping); subscribers.get(cid)?.delete(send) })

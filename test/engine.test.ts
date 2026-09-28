@@ -239,7 +239,18 @@ test('C. another model’s words are fenced as untrusted data', async () => {
   )
 })
 
-test('D. a roundtable stops early when the models converge', async () => {
+test('D. convergence is OFF unless asked for', async () => {
+  const { store, engine, conv } = await rig({
+    openai:    { reply: () => 'I think PostgreSQL is the right choice here.' },
+    anthropic: { reply: () => 'I think PostgreSQL is the right choice here too.' },
+    stops: { maxTurns: 4 },   // convergenceThreshold defaults to 0
+  })
+  await engine.send(conv.id, 'go', 'roundtable')
+  const ai = (await store.getMessages(conv.id)).filter(m => m.speakerType === 'ai')
+  assert.equal(ai.length, 4, 'runs to the turn cap; lexical repetition does not stop it')
+})
+
+test('D2. two consecutive flat turns end a round when convergence is enabled', async () => {
   const { store, engine, events, conv } = await rig({
     openai:    { reply: () => 'I think PostgreSQL is the right choice here.' },
     // Says almost exactly what the other just said — the failure the turn
@@ -255,15 +266,28 @@ test('D. a roundtable stops early when the models converge', async () => {
   assert.equal(end && end.type === 'round-end' && end.reason, 'converged')
 })
 
-test('E. bare agreement ends a round even when it shares no words', async () => {
-  const { engine, events, conv } = await rig({
-    openai:    { reply: () => 'We should use PostgreSQL for the write throughput.' },
+test('E. one bare agreement is NOT enough to end a round', async () => {
+  // This used to stop on turn two, before the second participant had been
+  // responded to at all. One flat turn is a pause; two is a pattern.
+  const { store, engine, conv } = await rig({
+    openai:    { reply: (_c, t) => t === 0 ? 'We should use PostgreSQL for the write throughput.' : 'Separately, the connection pooling story matters more than the engine.' },
     anthropic: { reply: () => 'Agreed.' },
-    stops: { maxTurns: 6, convergenceThreshold: 0.75 },
+    stops: { maxTurns: 4, convergenceThreshold: 0.75 },
   })
   await engine.send(conv.id, 'go', 'roundtable')
-  const end = events.find(e => e.type === 'round-end')
-  assert.equal(end && end.type === 'round-end' && end.reason, 'converged')
+  const ai = (await store.getMessages(conv.id)).filter(m => m.speakerType === 'ai')
+  assert.ok(ai.length > 2, `did not stop on the first "Agreed." (ran ${ai.length} turns)`)
+})
+
+test('E2. similarity is symmetric — a turn that ADDS detail is not repetition', async () => {
+  const { similarity } = await import('../src/engine/stops.ts')
+  const short = 'The database choice depends on workload'
+  const long  = 'The database choice depends on latency and workload characteristics'
+  // Overlap-coefficient scoring gave this 1.00, so a qualification read as an
+  // echo. Review caught it.
+  assert.ok(similarity(short, long) < 0.75,
+    `a longer, more specific restatement scores ${similarity(short, long).toFixed(2)}`)
+  assert.equal(similarity(short, long), similarity(long, short), 'and it is symmetric')
 })
 
 test('F. an incomplete turn never becomes another model’s context', async () => {

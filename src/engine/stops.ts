@@ -20,7 +20,11 @@ export const DEFAULT_STOPS: StopConfig = {
   maxTurns:   6,
   maxCostUsd: 1.0,
   deadlineMs: 120_000,
-  convergenceThreshold: 0.75,
+  // OFF by default. The signal is real; this detector is not good enough to
+  // decide on its own when a conversation is finished, and a false positive
+  // silently truncates a useful exchange based on lexical style rather than
+  // content. Turn it on deliberately. See ADR 0005 and ADR 0009.
+  convergenceThreshold: 0,
 }
 
 export interface RoundState {
@@ -34,9 +38,14 @@ export interface RoundState {
 export type StopReason =
   | 'max-turns' | 'max-cost' | 'deadline' | 'converged' | 'cancelled' | null
 
-/** Word-set overlap. Crude on purpose — it is cheap, has no dependencies, and
- *  needs no model call. Replaceable behind this function if it proves too
- *  blunt; the ADR records that it is expected to. */
+/** Jaccard: shared words over the union.
+ *
+ *  This divided by the SMALLER set until review caught it. That is the overlap
+ *  coefficient, and it is maximally biased toward short turns: any turn whose
+ *  words are a subset of a longer one scored 1.00. "The database choice depends
+ *  on workload" against "...depends on latency and workload characteristics"
+ *  came out a perfect match, so a turn that ADDED a qualification read as
+ *  repetition. Union in the denominator is symmetric and has no such bias. */
 export function similarity(a: string, b: string): number {
   const words = (s: string) => new Set(
     s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3)
@@ -45,7 +54,7 @@ export function similarity(a: string, b: string): number {
   if (A.size === 0 || B.size === 0) return 0
   let shared = 0
   for (const w of A) if (B.has(w)) shared++
-  return shared / Math.min(A.size, B.size)
+  return shared / (A.size + B.size - shared)
 }
 
 /** Agreement with nothing added. Checked separately from similarity because a
@@ -57,13 +66,17 @@ export function checkStop(state: RoundState, cfg: StopConfig): StopReason {
   if (state.costUsd    >= cfg.maxCostUsd)          return 'max-cost'
   if (Date.now() - state.startedAt >= cfg.deadlineMs) return 'deadline'
 
-  if (cfg.convergenceThreshold > 0 && state.turns.length >= 2) {
-    const last = state.turns[state.turns.length - 1]
-    if (BARE_AGREEMENT.test(last.trim())) return 'converged'
-    // Compare against the previous turn — the other participant's — since
-    // restating what was just said is the signal we care about.
-    const prev = state.turns[state.turns.length - 2]
-    if (similarity(last, prev) >= cfg.convergenceThreshold) return 'converged'
+  // Two consecutive low-information turns, not one. A single "Agreed." used to
+  // end a round on turn two — before the second participant had been responded
+  // to at all. One flat turn is a pause; two in a row is a pattern.
+  if (cfg.convergenceThreshold > 0 && state.turns.length >= 3) {
+    const t = state.turns
+    const flat = (i: number) => {
+      const cur = t[i], prev = t[i - 1]
+      if (!cur || !prev) return false
+      return BARE_AGREEMENT.test(cur.trim()) || similarity(cur, prev) >= cfg.convergenceThreshold
+    }
+    if (flat(t.length - 1) && flat(t.length - 2)) return 'converged'
   }
 
   return null

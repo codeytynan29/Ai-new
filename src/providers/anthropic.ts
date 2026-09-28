@@ -17,9 +17,21 @@ const PRICE: Record<string, { input: number; output: number }> = {
   'claude-haiku-4-5':{ input: 1, output: 5 },
 }
 
+// An unknown model used to silently borrow Opus pricing, which makes the cost
+// ceiling quietly wrong in whichever direction the real price differs. Warn
+// once, and estimate HIGH — a ceiling that trips early is recoverable; one that
+// trips late has already spent the money. Review raised this; ADR 0009.
+let warned = false
+const UNKNOWN = { input: 15, output: 75 }
+
 function cost(model: string, inTok: number, outTok: number): number {
-  const p = PRICE[model] ?? PRICE['claude-opus-5']
-  return (inTok / 1e6) * p.input + (outTok / 1e6) * p.output
+  const p = PRICE[model]
+  if (!p && !warned) {
+    warned = true
+    console.warn(`[anthropic] no price for "${model}" — cost ceiling is a high estimate, not a measurement`)
+  }
+  const rate = p ?? UNKNOWN
+  return (inTok / 1e6) * rate.input + (outTok / 1e6) * rate.output
 }
 
 export const DEFAULT_SYSTEM =

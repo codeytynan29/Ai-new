@@ -19,4 +19,12 @@ component that sees every write). It is both transcript order and the SSE
 resume cursor.
 
 **`usage`** exists because ADR 0005 needs a cost ceiling, and cost cannot be
-bounded without measuring it.
+bounded without measuring it. How reliable that measurement is depends on the
+adapters, which have not been validated against live endpoints — see ADR 0009.
+
+**`inReplyTo`** is written by the engine and, as review pointed out, read by
+nothing. Keeping it anyway, with the honest reason rather than an implied
+feature: it records which human turn a round answers, and that association only
+exists at write time. It cannot be reconstructed later from ordering once
+cancelled turns interleave or a second human joins. One nullable field is a
+cheap hedge against information that is otherwise destroyed on the spot.
