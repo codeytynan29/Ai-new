@@ -51,18 +51,43 @@ async function buildProviders(): Promise<AIProvider[]> {
     ]
   }
   const out: AIProvider[] = []
-  // Only construct an adapter when its key exists, so the app runs with one
-  // provider configured (§16: one being unavailable is not fatal).
-  if (process.env.OPENAI_API_KEY) {
+
+  // Two ways a provider can be authenticated, and the app must not assume the
+  // first one:
+  //
+  //   1. A key in the environment, which the SDK reads itself.
+  //   2. An egress proxy that injects the auth header on the way out, so the
+  //      process never sees the credential at all. Claude Code's cloud
+  //      environments offer this as "API credentials", and it is the correct
+  //      place for a secret there — the plain environment-variable box in the
+  //      same dialog says in as many words that its contents are visible to
+  //      anyone using the environment.
+  //
+  // Under (2) there is no key to detect, so presence of a key cannot be the
+  // test for whether a provider exists. Opt in explicitly instead, and hand the
+  // SDK a placeholder so it does not refuse to construct.
+  const VIA_PROXY = 'set-by-egress-proxy'
+
+  const wantOpenAI    = !!process.env.OPENAI_API_KEY    || process.env.OPENAI_VIA_CREDENTIAL === '1'
+  const wantAnthropic = !!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_VIA_CREDENTIAL === '1'
+
+  if (wantOpenAI) {
     const { OpenAIProvider } = await import('./providers/openai.ts')
-    out.push(new OpenAIProvider())
+    out.push(new OpenAIProvider(process.env.OPENAI_API_KEY ?? VIA_PROXY))
   }
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (wantAnthropic) {
     const { AnthropicProvider } = await import('./providers/anthropic.ts')
-    out.push(new AnthropicProvider())
+    out.push(new AnthropicProvider(process.env.ANTHROPIC_API_KEY ?? VIA_PROXY))
   }
+
   if (out.length === 0) {
-    console.error('No provider keys found. Set OPENAI_API_KEY and/or ANTHROPIC_API_KEY, or run with --mock.')
+    console.error([
+      'No providers configured. Either:',
+      '  • set OPENAI_API_KEY / ANTHROPIC_API_KEY, or',
+      '  • store the key as an environment API credential and set',
+      '    OPENAI_VIA_CREDENTIAL=1 / ANTHROPIC_VIA_CREDENTIAL=1, or',
+      '  • run with --mock',
+    ].join('\n'))
     process.exit(1)
   }
   return out
