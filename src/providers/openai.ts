@@ -5,7 +5,7 @@ import OpenAI from 'openai'
 import type { AIProvider, ContextTurn, GenerationOptions, ProviderEvent, Usage } from '../types.ts'
 import { renderTurn, hasForeign, FOREIGN_CONTENT_NOTE } from '../engine/context.ts'
 
-const MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
+const MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.5'
 
 // $ per million tokens, same caveat as the Anthropic adapter: only feeds the
 // roundtable cost ceiling. Override per model via OPENAI_PRICE_IN/OUT.

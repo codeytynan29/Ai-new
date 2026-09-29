@@ -28,8 +28,16 @@ one conversation without spending anything.
 
 ```
 cp .env.example .env     # add OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+npm run doctor           # check the keys and the models before spending anything
 npm start
 ```
+
+`doctor` exists because the adapters were written on a machine with no API keys.
+Typechecking proves the SDK calls are shaped correctly; it proves nothing about
+whether your account has the model named in `.env`. So it asks your account what
+it actually has, names the alternatives when the configured model is missing,
+and makes one 16-token call to each provider to prove the path works end to end
+before you open the app.
 
 One key is enough — a missing provider is simply absent from the room, which is
 §16's "one provider being unavailable while the other remains available".
